@@ -408,7 +408,7 @@ Public payment content is JSON:
             { "role": "arbiter", "id": "<arbiter-payment-identity>" }
           ],
           "conditions": {
-            "arbitration": { "type": "continuous", "denominator": "1000000" }
+            "arbitration": { "type": "continuous", "denominator": "1000" }
           },
           "paths": []
         }
@@ -681,7 +681,9 @@ trade is cancelled, an Order Cancel event is still required.
 A Payment Settlement event records the post-deposit outcome for escrowed
 payments and bids. It MUST include `["e", "<payment-event-id>", "<relay-hint>",
 "payment"]` and SHOULD include `payment-ack` references for the acknowledgements
-or authorizations it consumes.
+or authorizations it consumes. If its result proof is confidential or conveys
+spend authority, it MUST also include a top-level sealed proof envelope and one
+`payment_proof_key` tag for each authorized recipient.
 
 Content:
 
@@ -696,8 +698,15 @@ Content:
     { "role": "buyer", "pubkey": "<buyer-pubkey>", "amount": "500" },
     { "role": "seller", "pubkey": "<seller-pubkey>", "amount": "500" }
   ],
+  "proof": {
+    "version": 1,
+    "mode": "sealed:v1",
+    "proofId": "<sha256-of-canonical-clear-proof>",
+    "payload": "<sealed-complete-settlement-proof>"
+  },
   "data": {
-    "witnesses": { "...": "method-specific settlement data" }
+    "proofCommitment": "<sha256-of-driver-result-proof>",
+    "receipt": { "status": "completed", "operationId": "<durable-operation-id>" }
   }
 }
 ```
@@ -707,9 +716,20 @@ it exists, it MUST contain proof that settlement already happened or enough
 witness data for the relevant participants to claim their settlement outputs
 without any further event. For Cashu, settlement events can carry a signed claim
 packet, deterministic restore metadata, or a fully authorized collaborative swap
-template. For EVM, settlement events usually reference on-chain settlement
-transactions and are advisory because refunds, releases, and losing bids can be
-independently verified on chain.
+template only inside the complete sealed proof. Cashu proofs, serialized inputs,
+output secrets, witnesses, and recovery material MUST NOT appear in cleartext
+content or tags. Public `inputs`, `outputs`, and `data` MUST be limited to
+non-secret commitments, allocations, and completed-operation receipt evidence.
+For EVM, settlement events usually reference on-chain settlement transactions
+and are advisory because refunds, releases, and losing bids can be independently
+verified on chain.
+
+The sealed proof decrypts to the same generic `{paymentProof:{driver,terms or
+sealedTerms,params}}` object used by a Payment event. Its `proofId` and
+`payment_proof_key` tags use the same hashing and disclosure-key rules defined
+above. An auction refund SHOULD wrap the key only for the refunding arbiter and
+the bid buyer. A promoted payment SHOULD wrap it for the resulting order's
+participants. Implementations MUST verify the clear proof hash after decryption.
 
 Each Payment Settlement event settles exactly one Payment event. When one
 order, promoted auction order, or other payment group contains multiple Payment
@@ -766,19 +786,31 @@ entries:
 sha256(json([
   tradeId,
   sorted([
-    ["buyer", "<buyer-participant-pubkey>"],
-    ["seller", "<seller-participant-pubkey>"],
-    ["arbiter", "<arbiter-participant-pubkey>"]
+    {"role":"buyer","pubkey":"<buyer-participant-pubkey>"},
+    {"role":"seller","pubkey":"<seller-participant-pubkey>"},
+    {"role":"arbiter","pubkey":"<arbiter-participant-pubkey>"}
   ])
 ]))
 ```
 
-`json(...)` means deterministic JSON with no insignificant whitespace and stable
-array ordering. The participant entries are sorted by role name and then pubkey.
-The resulting 32-byte hash is lowercase hex. Implementations MAY use a different
-canonical binary encoding if it is explicitly profiled by a future version of
-this NIP, but all participants in a marketplace MUST use the same encoding to
-produce the same `d` tag.
+`json(...)` is the UTF-8 encoding of deterministic JSON with no insignificant
+whitespace. Object keys are sorted lexicographically (`pubkey` before `role`),
+and participant objects are sorted first by `role` and then by `pubkey`. SHA-256
+is applied to those UTF-8 bytes and encoded as 64 lowercase hexadecimal
+characters. Implementations MUST NOT substitute tuple entries or ordinary
+insertion-order JSON.
+
+Golden vector:
+
+```text
+tradeId = "trade-vector-1"
+participants = [
+  {"role":"seller","pubkey":"2222222222222222222222222222222222222222222222222222222222222222"},
+  {"role":"buyer","pubkey":"1111111111111111111111111111111111111111111111111111111111111111"},
+  {"role":"arbiter","pubkey":"3333333333333333333333333333333333333333333333333333333333333333"}
+]
+orderGroupId = "0a71706f343b3cd9d1e80727c838de01f381fc44408a232873bd65dd62734851"
+```
 
 Private negotiation orders before arbitration service selection use the same derivation with
 the available buyer and seller participant entries. When an arbiter is selected,
@@ -961,11 +993,22 @@ A Nostr user MAY instead publish encrypted SEED events (`kind:1330`) globally. A
 
 SEED events MUST use a regular, non-replaceable event kind. Clients MUST NOT use a replaceable event kind for seed backups, because replacing a seed can make older deterministic trade ids and temporary trade keys unrecoverable. If a client accidentally publishes another seed, the older event remains available on relays because the kind is not replaceable.
 
-On startup, a client that uses deterministic marketplace seeds SHOULD query the
-user's `kind:1330` events with `limit: 1` and use only the first seed event it
-receives. If that event cannot be decrypted or parsed, the default behavior is a
-startup/recovery failure rather than scanning additional seed events. This NIP
-does not define default multi-seed selection, rotation, or merging behavior.
+On startup, a client that uses deterministic marketplace seeds SHOULD query a
+bounded candidate set of the user's `kind:1330` events (`limit: 50` is the
+recommended interoperability profile). It MUST discard events with the wrong
+author or kind, invalid signatures, empty content, and duplicate event ids.
+Candidates are ordered by descending `created_at`; equal timestamps are ordered
+by descending event id. The first candidate that decrypts and parses as a valid
+version-1 seed payload is authoritative. Relay order and relay duplication MUST
+NOT affect the result. If signed candidates exist but none decrypt and parse,
+startup/recovery MUST fail rather than create a replacement seed. A client MAY
+create and publish a seed only when no valid signed candidates exist.
+
+Equal-time selection vector: for two otherwise valid candidates at
+`created_at=1712678401` with ids
+`68c062f9d712eeb64296754b3d2111887a6a865db9371001399801d0eff2c944` and
+`2e444bafa4d167a8e0f1d11beabc204823694845a4eaf2c8aa0f56575c56222e`,
+the `68c0…c944` event is selected regardless of relay or array ordering.
 
 Clients that can decrypt a SEED event can derive arbitrary trade ids and temporary trade keys from the seed, avoiding dependence on one device's local storage of encrypted gift wraps for each individual trade. This is a convenience and recovery mechanism, not a consensus requirement: clients MUST accept valid orders and participant proofs regardless of whether their trade ids and temporary keys were random, locally stored, or derived from a published SEED event.
 
@@ -973,10 +1016,10 @@ Clients that implement deterministic derivation SHOULD domain-separate trade ids
 
 ## Related NIPs
 
-- [NIP-01](01.md) — Event structure and parameterized replaceable events.
-- [NIP-99](99.md) — Classified listings.
-- [NIP-17](17.md) — Private message rumor kind `14`.
-- [NIP-19](19.md) — `naddr` encoding for anchors.
-- [NIP-44](44.md) — Encryption scheme.
-- [NIP-57](57.md) — Zaps.
-- [NIP-59](59.md) — Gift wrap.
+- [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md) — Event structure and parameterized replaceable events.
+- [NIP-99](https://github.com/nostr-protocol/nips/blob/master/99.md) — Classified listings.
+- [NIP-17](https://github.com/nostr-protocol/nips/blob/master/17.md) — Private message rumor kind `14`.
+- [NIP-19](https://github.com/nostr-protocol/nips/blob/master/19.md) — `naddr` encoding for anchors.
+- [NIP-44](https://github.com/nostr-protocol/nips/blob/master/44.md) — Encryption scheme.
+- [NIP-57](https://github.com/nostr-protocol/nips/blob/master/57.md) — Zaps.
+- [NIP-59](https://github.com/nostr-protocol/nips/blob/master/59.md) — Gift wrap.
