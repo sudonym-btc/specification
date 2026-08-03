@@ -7,7 +7,7 @@ Accommodation Listing Profile for NIP-99 Marketplace Listings
 `draft` `optional`
 
 This NIP defines an accommodation marketplace profile for the NIP-99
-Marketplace Listing Extension and [NIP-99](99.md) classified listings. It does
+Marketplace Listing Extension and [NIP-99](https://github.com/nostr-protocol/nips/blob/master/99.md) classified listings. It does
 not define a new listing event kind.
 
 Accommodation listings use the NIP-99 event kinds:
@@ -260,6 +260,6 @@ Clients displaying accommodation listings SHOULD:
 ## Related NIPs
 
 - NIP-99 Marketplace Listing Extension.
-- [NIP-99](99.md) - Classified Listings.
-- [NIP-19](19.md) - `naddr` encoding for listing anchors.
-- [NIP-21](21.md) - `nostr:` URI scheme for linking to listings.
+- [NIP-99](https://github.com/nostr-protocol/nips/blob/master/99.md) - Classified Listings.
+- [NIP-19](https://github.com/nostr-protocol/nips/blob/master/19.md) - `naddr` encoding for listing anchors.
+- [NIP-21](https://github.com/nostr-protocol/nips/blob/master/21.md) - `nostr:` URI scheme for linking to listings.
