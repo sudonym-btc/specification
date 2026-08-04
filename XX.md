@@ -239,9 +239,13 @@ for one participant set from being replayed into another order group.
 | `releaseToCounterparty` | Buyer OR Seller (EIP-712) | Voluntarily sends funds to the other party. If the buyer signs, funds go to the seller and vice versa. |
 | `claim`                 | Seller (EIP-712)          | Claims funds after `unlockAt` has passed.                                                              |
 | `arbitrate`             | Arbiter (EIP-712)         | Splits funds: `factor/1000` to seller, remainder to buyer. `factor` is `0`–`1000` (0.1% precision).    |
-| `withdraw`              | Beneficiary (EIP-712)     | Pulls settled funds from the contract's balance mapping.                                               |
+| `withdraw`              | Beneficiary (EIP-712)     | Pulls settled funds using `Withdraw(token,destination,nonce)`; the contract consumes and increments the beneficiary nonce. |
 
-All operations use EIP-712 typed-data signatures, enabling gas-sponsored relay (anyone can broadcast the transaction).
+All operations use EIP-712 typed-data signatures, enabling gas-sponsored relay
+(anyone can broadcast the transaction). The current MultiEscrow profile uses
+EIP-712 domain name `Nostr MultiEscrow` and domain version `7`. Withdraw
+authorizations MUST include the contract-reported beneficiary nonce and MUST be
+rejected after that nonce has been consumed.
 
 ### Settlement
 
@@ -303,22 +307,46 @@ inside the payment proof:
             { "role": "arbiter", "id": "<arbiter-payment-identity>" }
           ],
           "conditions": {
-            "arbitration": { "type": "continuous", "denominator": "1000000" }
+            "policyType": "evm:multi-escrow",
+            "chainId": 33,
+            "contractAddress": "<deployed-escrow-contract-address>",
+            "contextHash": "<32-byte-context-hash>",
+            "recycleCovenantHash": "<32-byte-recycle-covenant-hash>",
+            "timeoutClaimantAddress": "<timeout-claimant-address>",
+            "unlockAt": "1781067882",
+            "escrowFee": {
+              "value": "0",
+              "denomination": "BTC",
+              "decimals": 8,
+              "assetId": "33:0x0000000000000000000000000000000000000000"
+            },
+            "arbitration": { "type": "continuous", "denominator": "1000" }
           },
           "paths": []
         }
       },
       "params": {
         "txHash": "<evm-transaction-hash>",
+        "policyId": "evm:multi-escrow",
+        "policyType": "evm:multi-escrow",
+        "policyHash": "<sha256-of-runtime-bytecode>",
+        "contractBytecodeHash": "<sha256-of-runtime-bytecode>",
         "chainId": 33,
+        "contractAddress": "<deployed-escrow-contract-address>",
         "tradeId": "<order-group-id>",
+        "buyerAddress": "<buyer-evm-address>",
         "sellerAddress": "<seller-evm-address>",
         "arbiterAddress": "<arbiter-evm-address>",
         "assetAddress": "<asset-address>",
+        "value": "50000",
         "paymentAmount": "50000",
+        "fundedValue": "50000",
         "bondAmount": "0",
         "escrowFee": "0",
         "unlockAt": "1781067882",
+        "timeoutClaimantAddress": "<timeout-claimant-address>",
+        "contextHash": "<32-byte-context-hash>",
+        "recycleCovenantHash": "<32-byte-recycle-covenant-hash>",
         "denomination": "BTC",
         "decimals": 8
       }
@@ -429,7 +457,7 @@ Separately, clients and arbiters MAY verify the linked order terms:
 
 ## Related NIPs
 
-- [NIP-01](01.md) — Event structure and parameterized replaceable events.
-- [NIP-17](17.md) — Private message rumor kind `14`.
-- [NIP-44](44.md) — Encryption scheme.
-- [NIP-59](59.md) — Gift wrap.
+- [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md) — Event structure and parameterized replaceable events.
+- [NIP-17](https://github.com/nostr-protocol/nips/blob/master/17.md) — Private message rumor kind `14`.
+- [NIP-44](https://github.com/nostr-protocol/nips/blob/master/44.md) — Encryption scheme.
+- [NIP-59](https://github.com/nostr-protocol/nips/blob/master/59.md) — Gift wrap.
