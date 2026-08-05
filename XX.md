@@ -182,6 +182,6 @@ Clients displaying marketplace listings SHOULD:
 
 ## Related NIPs
 
-- [NIP-99](99.md) - Classified Listings.
-- [NIP-19](19.md) - `naddr` encoding for listing anchors.
-- [NIP-21](21.md) - `nostr:` URI scheme for linking to listings.
+- [NIP-99](https://github.com/nostr-protocol/nips/blob/master/99.md) - Classified Listings.
+- [NIP-19](https://github.com/nostr-protocol/nips/blob/master/19.md) - `naddr` encoding for listing anchors.
+- [NIP-21](https://github.com/nostr-protocol/nips/blob/master/21.md) - `nostr:` URI scheme for linking to listings.
