@@ -455,7 +455,7 @@ even if the proof otherwise exists.
     ["p", "<seller-pubkey>", "", "seller"],
     ["p", "<arbiter-pubkey>", "", "arbiter"]
   ],
-  "content": "{\"amount\":{\"value\":\"12500\",\"denomination\":\"USD\",\"decimals\":2},\"proof\":{\"paymentProof\":{\"driver\":\"<opaque-evm-driver-id>\",\"terms\":{\"version\":1,\"asset\":{\"value\":\"12500\",\"denomination\":\"USD\",\"decimals\":2},\"parties\":[{\"role\":\"buyer\",\"id\":\"<buyer-payment-identity>\"},{\"role\":\"seller\",\"id\":\"<seller-payment-identity>\"},{\"role\":\"arbiter\",\"id\":\"<arbiter-payment-identity>\"}],\"lock\":{\"id\":\"<bid-lock-id>\",\"policyId\":\"<opaque-evm-driver-id>\",\"kind\":\"contract\",\"amount\":{\"value\":\"12500\",\"denomination\":\"USD\",\"decimals\":2},\"controls\":[{\"role\":\"buyer\",\"id\":\"<buyer-payment-identity>\"},{\"role\":\"seller\",\"id\":\"<seller-payment-identity>\"},{\"role\":\"arbiter\",\"id\":\"<arbiter-payment-identity>\"}],\"conditions\":{\"arbitration\":{\"type\":\"continuous\",\"denominator\":\"1000000\"}},\"paths\":[]}},\"params\":{\"txHash\":\"0x...\"}}}}"
+  "content": "{\"amount\":{\"value\":\"12500\",\"denomination\":\"USD\",\"decimals\":2},\"proof\":{\"paymentProof\":{\"driver\":\"<opaque-evm-driver-id>\",\"terms\":{\"version\":1,\"asset\":{\"value\":\"12500\",\"denomination\":\"USD\",\"decimals\":2},\"parties\":[{\"role\":\"buyer\",\"id\":\"<buyer-payment-identity>\"},{\"role\":\"seller\",\"id\":\"<seller-payment-identity>\"},{\"role\":\"arbiter\",\"id\":\"<arbiter-payment-identity>\"}],\"lock\":{\"id\":\"<bid-lock-id>\",\"policyId\":\"<opaque-evm-driver-id>\",\"kind\":\"contract\",\"amount\":{\"value\":\"12500\",\"denomination\":\"USD\",\"decimals\":2},\"controls\":[{\"role\":\"buyer\",\"id\":\"<buyer-payment-identity>\"},{\"role\":\"seller\",\"id\":\"<seller-payment-identity>\"},{\"role\":\"arbiter\",\"id\":\"<arbiter-payment-identity>\"}],\"conditions\":{\"arbitration\":{\"type\":\"continuous\",\"denominator\":\"1000\"}},\"paths\":[]}},\"params\":{\"txHash\":\"0x...\"}}}}"
 }
 ```
 
@@ -528,10 +528,10 @@ This hides the lock amount and settlement paths while keeping the driver and
 params visible. Recipients decrypt sealed terms with `payment_proof_key` tags
 using the sealed terms `proofId` as the key id.
 
-Cashu bearer tokens or proofs MUST NOT be published in plaintext on public
-relays unless the auction profile explicitly accepts public pre-signatures for
-v1 interoperability. Bearer tokens MUST be delivered through the arbiter's
-private driver-specific transport.
+Cashu bearer tokens, proofs, serialized inputs, output secrets, swap previews,
+or pre-signatures MUST NOT be published in plaintext on public relays. The
+complete Cashu payment proof MUST be sealed, and its disclosure key MUST be
+wrapped only for the participants that need to validate or spend it.
 
 ## Payment Acknowledgment and Rejection
 
@@ -640,10 +640,11 @@ event explicitly defines a cancellation policy.
 
 When settling an auction, the arbiter validates all bid/payment pairs for the
 auction. Accepted bid chains are ordered by total accepted chain value, not only
-by the head bid event amount. Invalid bids and non-winning valid bids MUST be refunded or released
-with the existing marketplace payment settlement event `kind:32125` using
-`action=auction_refund` and a 100% refund where the method supports explicit
-refund percentages.
+by the head bid event amount. Invalid bids and non-winning valid bids MUST be
+refunded or released with the existing marketplace payment settlement event
+`kind:32125` using `action=auction_refund`. If the method has an explicit refund
+percentage, it MUST be the integer `100`; a smaller or caller-selectable
+percentage is invalid.
 
 Winning bid-chain payments MUST NOT be paid directly to the seller merely
 because the auction ended. Instead every accepted payment in the winning chain
@@ -668,6 +669,20 @@ Example tags:
 ]
 ```
 
+The driver-returned settlement proof MAY contain spend authority and therefore
+MUST be treated as confidential by default. A `kind:32125` settlement carrying
+such a proof MUST put the complete payment proof object in a `sealed:v1`
+envelope in the top-level `proof` content field and attach matching
+`payment_proof_key` tags. For `auction_refund`, disclosure MUST be limited to
+the refunding arbiter and the bid buyer. The public `data` object MAY contain a
+SHA-256 proof commitment and a non-secret operation receipt, but MUST NOT
+contain clear proof params, Cashu proofs, swap output secrets, or recovery
+material.
+
+Financial refund/promotion operations and their durable operation receipts MUST
+complete before settlement publication. A retry MUST reuse the same operation
+identifier and the exact previously signed events.
+
 ### Winner Promotion into an Order
 
 For the selected winning chain, the arbiter MUST:
@@ -675,20 +690,23 @@ For the selected winning chain, the arbiter MUST:
 1. Call the driver-specific refund operation for each non-winning bid payment
    and the driver-specific promotion/recycle operation for each winning-chain
    payment.
-2. Publish a `kind:1024` auction complete event.
-3. Publish `kind:32125` payment settlement events for each bid payment,
+2. Publish `kind:32125` payment settlement events for each bid payment,
    including `action=auction_refund` for losers and one `action=auction_promote`
    event for each promoted winning-chain payment.
-4. Publish a normal `kind:32122` marketplace order authored by the arbiter,
+3. Publish a normal `kind:32122` marketplace order authored by the arbiter,
    with `recipient` set to the winner's temporary buyer trade pubkey and
    `trade` set to the winning `bid_chain` id when present, otherwise the winning
    bid trade ID.
-5. Publish a new `kind:32123` marketplace payment event for each promoted
+4. Publish a new `kind:32123` marketplace payment event for each promoted
    winning-chain payment, each carrying its evolved payment proof and linking to
    the promoted order, the auction complete event, and the matching
    `auction_promote` settlement.
-6. Publish a `kind:32124` payment acknowledgment for each promoted order
+5. Publish a `kind:32124` payment acknowledgment for each promoted order
    payment.
+6. Publish the terminal `kind:1024` auction complete event only after every
+   required settlement, promoted order, payment, and acknowledgment above has
+   been durably published. Implementations MAY sign and journal this event
+   earlier so dependent events can reference its id, but MUST publish it last.
 
 The promoted order SHOULD copy participant proofs from the winning bid-chain
 head. Promoted order payments SHOULD preserve their own payment amounts, and
@@ -710,14 +728,82 @@ rejected bids.
 
 Cashu tokens or proofs MUST NOT be included in public bid events. They are sent
 to the arbiter through a private transport. Public payment events carry only
-commitments, public pre-signature metadata where explicitly supported, and
-driver-specific metadata.
+commitments and non-secret driver metadata; buyer signatures, witnesses,
+serialized proofs, and swap previews remain inside the whole-proof seal.
 
 For auction bids, the Cashu payment profile SHOULD support a bidder refund path
 and a pre-authorized promotion path. If the bid wins, the arbiter uses the
 bidder's public v1 authorization to move the locked bid funds into a normal
 order escrow condition. If the bid loses or is invalid, the arbiter publishes an
 `auction_refund` settlement proof.
+
+### Cashu 100% Refund Authorization
+
+A Cashu auction bid that supports an arbiter-executed refund MUST include the
+following `refundArgs` inside its confidential payment-proof params:
+
+```jsonc
+{
+  "version": 1,
+  "type": "cashu:p2pk-auction-refund-v1",
+  "refundPercent": 100,
+  "source": {
+    "tradeId": "<bid-trade-id>",
+    "settlementId": "<bid-settlement-id>",
+    "policyType": "cashu:p2pk-auction-v1",
+    "mint": "https://mint.example",
+    "unit": "sat",
+    "sourceValue": "<funded-input-value>",
+    "inputFee": "<mint-input-fee>",
+    "keysetId": "<output-keyset-id>"
+  },
+  "target": {
+    "policyType": "cashu:p2pk-refund-v1",
+    "buyerPubkey": "<buyer-cashu-pubkey>",
+    "buyerOutputValue": "<recoverable-value>"
+  },
+  "message": "<canonical-json-below>",
+  "messageHash": "0x<sha256-of-message>",
+  "signerPubkey": "<buyer-cashu-pubkey>",
+  "signature": "<buyer-bip340-signature-over-messageHash>",
+  "swap": {
+    "version": 1,
+    "amount": "<recoverable-value>",
+    "fees": "<mint-input-fee>",
+    "keysetId": "<output-keyset-id>",
+    "inputs": ["<serialized-source-proof>"],
+    "sendOutputs": [{ "...": "<serialized-buyer-output-data>" }],
+    "keepOutputs": [],
+    "unselectedProofs": []
+  }
+}
+```
+
+`message` MUST be the UTF-8 JSON serialization, in the field order shown, of
+exactly `{version,type,refundPercent,source,target,swap}` with no whitespace or
+additional fields. `messageHash` MUST be SHA-256 of those exact bytes and the
+BIP-340 signature MUST verify against both `signerPubkey` and
+`target.buyerPubkey`. The serialized swap inputs MUST also contain the buyer's
+valid Cashu `SIG_ALL` witness over the exact authorized output set.
+
+Before any mint request, the refunding driver MUST verify the outer signature,
+the `SIG_ALL` witness, source proof equality, mint, unit, keyset, policy tags,
+buyer target, and these value equations:
+
+```text
+sourceValue = buyerOutputValue + inputFee
+swap.amount = buyerOutputValue
+swap.fees = inputFee
+```
+
+The refund output MUST be an independently spendable buyer-only P2PK proof with
+policy `cashu:p2pk-refund-v1` and tags binding the original trade and settlement.
+On retry after ambiguous mint completion, the driver MUST use the same durable
+operation identifier and restore the exact pre-authorized outputs through
+NUT-09; it MUST NOT generate replacement secrets or a different output set.
+The returned proof MUST be whole-proof sealed in the `auction_refund`
+settlement event as specified above. Public receipt evidence SHOULD expose only
+`sourceValue`, `inputFee`, `buyerOutputValue`, and the source message hash.
 
 ## EVM Arbiter-Canonical Profile
 
@@ -810,11 +896,15 @@ increments in the chain.
 Tie-break order:
 
 1. Highest accepted bid-chain total wins.
-2. If amounts are equal, earliest accepted bid wins.
-3. If acceptance time is equal, lexicographically smallest bid event id wins.
+2. If amounts are equal, the chain whose head bid has the smallest
+   `created_at` wins.
+3. If head-bid timestamps are equal, the lexicographically smallest lowercase
+   hexadecimal head bid event id wins.
 
-Implementations MAY instead use bid `created_at` for the second tie-breaker,
-but the auction arbiter MUST apply one deterministic rule consistently.
+These rules are normative. Relay receipt order, payment-ack receipt order, and
+local clocks MUST NOT be used as alternate tie-breakers. For example, equal
+totals with `(created_at,id)` values `(100,"bb...")`, `(100,"aa...")`, and
+`(101,"00...")` are ordered `aa...`, `bb...`, `00...`.
 
 ## Notes
 
