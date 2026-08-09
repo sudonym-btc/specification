@@ -737,6 +737,34 @@ bidder's public v1 authorization to move the locked bid funds into a normal
 order escrow condition. If the bid loses or is invalid, the arbiter publishes an
 `auction_refund` settlement proof.
 
+An auction-capable mint MUST advertise NUT-11 and NUT-09. Before accepting a
+bid, the implementation MUST also have an explicit operator policy committing
+one output keyset id to remain active through a stated Unix timestamp. It MUST
+verify that keyset is currently active and that the committed timestamp covers
+the bid locktime. NUT-02 `final_expiry` is a final redemption deadline, not an
+active-through promise; a missing or null value MUST NOT be promoted into one.
+The exact keyset id and operator horizon are buyer-signed in both settlement
+paths and MUST be rechecked immediately before the mint request.
+
+The promotion `recycleArgs.source` object MUST contain:
+
+```json
+{
+  "tradeId": "<bid-trade-id>",
+  "settlementId": "<bid-settlement-id>",
+  "policyType": "cashu:p2pk-auction-v1",
+  "mint": "https://mint.example",
+  "unit": "sat",
+  "outputKeysetId": "<pre-authorized-output-keyset-id>",
+  "outputKeysetActiveUntil": 1800000000
+}
+```
+
+Those fields are part of the canonical buyer-signed promotion message together
+with the exact target and swap. The mint/unit, active keyset, operator horizon,
+source proofs, target policy, amounts, and `SIG_ALL` output commitment MUST all
+match before promotion.
+
 ### Cashu 100% Refund Authorization
 
 A Cashu auction bid that supports an arbiter-executed refund MUST include the
@@ -755,7 +783,8 @@ following `refundArgs` inside its confidential payment-proof params:
     "unit": "sat",
     "sourceValue": "<funded-input-value>",
     "inputFee": "<mint-input-fee>",
-    "keysetId": "<output-keyset-id>"
+    "keysetId": "<output-keyset-id>",
+    "keysetActiveUntil": 1800000000
   },
   "target": {
     "policyType": "cashu:p2pk-refund-v1",
@@ -788,7 +817,7 @@ valid Cashu `SIG_ALL` witness over the exact authorized output set.
 
 Before any mint request, the refunding driver MUST verify the outer signature,
 the `SIG_ALL` witness, source proof equality, mint, unit, keyset, policy tags,
-buyer target, and these value equations:
+buyer target, configured active-through horizon, and these value equations:
 
 ```text
 sourceValue = buyerOutputValue + inputFee
